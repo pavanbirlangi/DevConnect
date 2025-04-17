@@ -1,14 +1,17 @@
 import React, { useState, useEffect } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Github, Globe, Linkedin, MapPin, Mail, MessageSquare } from "lucide-react";
+import { Github, Globe, Linkedin, MapPin, Mail, MessageSquare, UserPlus, Users, X } from "lucide-react";
 import ProjectCard from "@/components/projects/ProjectCard";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
+import { Link } from "react-router-dom";
+import { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+
 
 interface Profile {
   id: string;
@@ -41,16 +44,254 @@ interface Project {
   };
 }
 
+interface ProfilePayload {
+  id: string;
+  username: string;
+  name: string;
+  bio: string;
+  avatar: string;
+  location: string;
+  email: string;
+  skills: string[];
+  github_url: string;
+  website_url: string;
+  linkedin_url: string;
+}
+
 const ProfilePage = () => {
   const { username } = useParams();
   const { user } = useAuth();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [connectionStatus, setConnectionStatus] = useState<'none' | 'pending' | 'connected'>('none');
+  const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     fetchProfileAndProjects();
   }, [username]);
+
+  useEffect(() => {
+    if (user && profile && user.id !== profile.id) {
+      checkConnectionStatus();
+    }
+  }, [user?.id, profile?.id]);
+
+  // Add real-time subscriptions
+  useEffect(() => {
+    if (!profile?.id) return;
+
+    // Create a single channel for all subscriptions
+    const channel = supabase.channel('profile-updates');
+
+    // Subscribe to profile changes
+    channel
+      .on<ProfilePayload>(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'profiles',
+          filter: `id=eq.${profile.id}`,
+        },
+        async (payload: RealtimePostgresChangesPayload<ProfilePayload>) => {
+          console.log('Profile change received:', payload);
+          if (payload.new && typeof payload.new === 'object') {
+            const newData = payload.new as ProfilePayload;
+            const updatedProfile: Profile = {
+              id: newData.id,
+              username: newData.username,
+              name: newData.name || "Unknown User",
+              bio: newData.bio || "No bio available",
+              avatar: newData.avatar || "https://github.com/shadcn.png",
+              location: newData.location || "Location not specified",
+              email: newData.email || "",
+              skills: newData.skills || [],
+              githubUrl: newData.github_url || "",
+              websiteUrl: newData.website_url || "",
+              linkedinUrl: newData.linkedin_url || "",
+            };
+            setProfile(updatedProfile);
+          }
+          await fetchProfileAndProjects();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'connections',
+          filter: `or(and(user_id.eq.${user?.id},connected_user_id.eq.${profile.id}),and(user_id.eq.${profile.id},connected_user_id.eq.${user?.id}))`,
+        },
+        async (payload) => {
+          console.log('Connection change received:', payload);
+          await checkConnectionStatus();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'connection_requests',
+          filter: `or(and(sender_id.eq.${user?.id},receiver_id.eq.${profile.id}),and(sender_id.eq.${profile.id},receiver_id.eq.${user?.id}))`,
+        },
+        async (payload) => {
+          console.log('Request change received:', payload);
+          await checkConnectionStatus();
+        }
+      )
+      .subscribe((status) => {
+        console.log('Subscription status:', status);
+      });
+
+    // Cleanup subscription
+    return () => {
+      channel.unsubscribe();
+    };
+  }, [profile?.id, user?.id]);
+
+  // Add a separate effect to handle initial data loading
+  useEffect(() => {
+    if (profile?.id) {
+      fetchProfileAndProjects();
+      checkConnectionStatus();
+    }
+  }, [profile?.id]);
+
+  const checkConnectionStatus = async () => {
+    if (!user || !profile) return;
+
+    try {
+      // Check for pending request
+      const { data: pendingRequest, error: pendingError } = await supabase
+        .from('connection_requests')
+        .select('*')
+        .eq('sender_id', user.id)
+        .eq('receiver_id', profile.id)
+        .eq('status', 'pending')
+        .maybeSingle();
+
+      if (pendingError) {
+        console.error('Error checking pending request:', pendingError);
+        return;
+      }
+
+      if (pendingRequest) {
+        setConnectionStatus('pending');
+        setPendingRequestId(pendingRequest.id);
+        return;
+      }
+
+      // Check for existing connection in both directions
+      const { data: connections, error: connectionError } = await supabase
+        .from('connections')
+        .select('*')
+        .or(`and(user_id.eq.${user.id},connected_user_id.eq.${profile.id}),and(user_id.eq.${profile.id},connected_user_id.eq.${user.id})`);
+
+      if (connectionError) {
+        console.error('Error checking connection:', connectionError);
+        return;
+      }
+
+      if (connections && connections.length > 0) {
+        setConnectionStatus('connected');
+        return;
+      }
+
+      // If no pending request and no connection, set status to none
+      setConnectionStatus('none');
+      setPendingRequestId(null);
+    } catch (error) {
+      console.error('Error checking connection status:', error);
+      // In case of error, set status to none to allow reconnecting
+      setConnectionStatus('none');
+      setPendingRequestId(null);
+    }
+  };
+
+  const handleConnect = async () => {
+    if (!user || !profile) return;
+
+    try {
+      // Create a new request directly
+      const { data, error } = await supabase
+        .from('connection_requests')
+        .insert({
+          sender_id: user.id,
+          receiver_id: profile.id,
+          status: 'pending'
+        })
+        .select()
+        .single();
+
+      if (error) {
+        // If there's a unique constraint error, try to delete any existing requests first
+        if (error.code === '23505') {
+          // Delete any existing requests
+          await supabase
+            .from('connection_requests')
+            .delete()
+            .or(`and(sender_id.eq.${user.id},receiver_id.eq.${profile.id}),and(sender_id.eq.${profile.id},receiver_id.eq.${user.id})`);
+          
+          // Try to create the request again
+          const { data: retryData, error: retryError } = await supabase
+            .from('connection_requests')
+            .insert({
+              sender_id: user.id,
+              receiver_id: profile.id,
+              status: 'pending'
+            })
+            .select()
+            .single();
+            
+          if (retryError) throw retryError;
+          
+          setConnectionStatus('pending');
+          setPendingRequestId(retryData.id);
+          toast.success('Connection request sent successfully');
+          return;
+        }
+        throw error;
+      }
+
+      setConnectionStatus('pending');
+      setPendingRequestId(data.id);
+      toast.success('Connection request sent successfully');
+    } catch (error) {
+      console.error('Error sending connection request:', error);
+      toast.error('Failed to send connection request');
+    }
+  };
+
+  const handleWithdrawRequest = async () => {
+    if (!pendingRequestId || !user || !profile) return;
+
+    try {
+      // Delete the request directly
+      const { error: deleteError } = await supabase
+        .from('connection_requests')
+        .delete()
+        .eq('id', pendingRequestId)
+        .eq('sender_id', user.id);
+
+      if (deleteError) {
+        console.error('Error deleting request:', deleteError);
+        throw deleteError;
+      }
+
+      // Update local state
+      setConnectionStatus('none');
+      setPendingRequestId(null);
+
+      toast.success("Your connection request has been withdrawn.");
+    } catch (error) {
+      console.error('Error withdrawing request:', error);
+      toast.error("Failed to withdraw connection request");
+    }
+  };
 
   const fetchProfileAndProjects = async () => {
     try {
@@ -145,7 +386,7 @@ const ProfilePage = () => {
       </div>
     );
   }
-
+  
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -155,11 +396,11 @@ const ProfilePage = () => {
             <CardContent className="pt-6">
               <div className="flex flex-col items-center text-center mb-6">
                 <Avatar className="h-24 w-24 mb-4">
-                  <AvatarImage src={profile.avatar} alt={profile.name} />
-                  <AvatarFallback>{profile.name.charAt(0)}</AvatarFallback>
-                </Avatar>
+              <AvatarImage src={profile.avatar} alt={profile.name} />
+              <AvatarFallback>{profile.name.charAt(0)}</AvatarFallback>
+            </Avatar>
                 <h1 className="text-2xl font-bold">{profile.name}</h1>
-                <p className="text-muted-foreground">@{profile.username}</p>
+            <p className="text-muted-foreground">@{profile.username}</p>
               </div>
 
               <div className="space-y-4">
@@ -172,26 +413,26 @@ const ProfilePage = () => {
                     <div className="flex items-center text-sm text-muted-foreground">
                       <MapPin size={16} className="mr-2" />
                       {profile.location}
-                    </div>
+              </div>
                   )}
                   {profile.email && (
                     <div className="flex items-center text-sm text-muted-foreground">
                       <Mail size={16} className="mr-2" />
                       {profile.email}
-                    </div>
+            </div>
                   )}
-                </div>
+            </div>
 
                 {profile.skills.length > 0 && (
                   <div>
                     <h3 className="font-medium mb-2">Skills</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {profile.skills.map((skill) => (
-                        <span key={skill} className="tech-tag">
-                          {skill}
-                        </span>
-                      ))}
-                    </div>
+              <div className="flex flex-wrap gap-2">
+                {profile.skills.map((skill) => (
+                  <span key={skill} className="tech-tag">
+                    {skill}
+                  </span>
+                ))}
+              </div>
                   </div>
                 )}
 
@@ -219,15 +460,44 @@ const ProfilePage = () => {
                   )}
                 </div>
 
-                {user?.id === profile.id && (
-                  <Button className="w-full" variant="outline">
-                    <MessageSquare size={16} className="mr-2" />
-                    Edit Profile
-                  </Button>
+                {user?.id === profile.id ? (
+                  <>
+                    <Link to="/connections" className="w-full">
+                      <Button variant="outline" className="w-full">
+                        <Users size={16} className="mr-2" /> Manage Connections
+                      </Button>
+                    </Link>
+                    <Button className="w-full" variant="outline" onClick={() => navigate("/profile/edit")}>
+                      <MessageSquare size={16} className="mr-2" />
+                      Edit Profile
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    {connectionStatus === 'pending' ? (
+                      <Button 
+                        className="w-full" 
+                        variant="outline"
+                        onClick={handleWithdrawRequest}
+                      >
+                        <X size={16} className="mr-2" /> Withdraw Request
+                      </Button>
+                    ) : connectionStatus === 'none' ? (
+                      <Button 
+                        className="w-full" 
+                        onClick={handleConnect}
+                      >
+                        <UserPlus size={16} className="mr-2" /> Connect
+                      </Button>
+                    ) : null}
+                    <Button variant="outline" className="w-full">
+                      <MessageSquare size={16} className="mr-2" /> Message
+                    </Button>
+                  </>
                 )}
-              </div>
-            </CardContent>
-          </Card>
+            </div>
+          </CardContent>
+        </Card>
         </div>
 
         {/* Main Content */}

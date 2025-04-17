@@ -1,4 +1,3 @@
-
 import React from "react";
 import { Link } from "react-router-dom";
 import { Code, Github, Linkedin, Twitter } from "lucide-react";
@@ -62,7 +61,7 @@ const Footer = () => {
               </li>
               <li>
                 <Link
-                  to="/profile/johndoe"
+                  to="/developers"
                   className="hover:text-devconnect-purple-dark transition-colors"
                 >
                   Developers

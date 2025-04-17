@@ -12,6 +12,10 @@ import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import { AuthProvider } from "./contexts/AuthContext";
 import CreateProjectPage from "@/pages/CreateProjectPage";
+import ProjectDetailPage from "./pages/ProjectDetailPage";
+import EditProfilePage from "@/pages/EditProfilePage";
+import DevelopersPage from "@/pages/DevelopersPage";
+import ConnectionsPage from "@/pages/ConnectionsPage";
 
 const queryClient = new QueryClient();
 
@@ -25,7 +29,11 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Layout><Index /></Layout>} />
             <Route path="/profile/:username" element={<Layout><ProfilePage /></Layout>} />
+            <Route path="/profile/edit" element={<EditProfilePage />} />
+            <Route path="/connections" element={<Layout><ConnectionsPage /></Layout>} />
+            <Route path="/developers" element={<Layout><DevelopersPage /></Layout>} />
             <Route path="/projects" element={<Layout><ProjectsPage /></Layout>} />
+            <Route path="/projects/:projectId" element={<Layout><ProjectDetailPage /></Layout>} />
             <Route path="/projects/create" element={<Layout><CreateProjectPage /></Layout>} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />

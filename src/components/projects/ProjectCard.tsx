@@ -78,7 +78,7 @@ const ProjectCard: React.FC<ProjectCardProps> = ({
             @{owner.username}
           </span>
         </Link>
-        <Link to={projectUrl}>
+        <Link to={`/projects/${id}`}>
           <Button size="sm" variant="outline">
             View Project
           </Button>

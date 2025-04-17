@@ -20,7 +20,7 @@ const Navbar = () => {
   
   const navLinks = [
     { name: "Home", href: "/" },
-    { name: "Developers", href: "/profile/johndoe" }, // Placeholder for now
+    { name: "Developers", href: "/developers" },
     { name: "Projects", href: "/projects" },
   ];
 
